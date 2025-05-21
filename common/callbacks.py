@@ -31,6 +31,7 @@ class LoggingCallback(keras.callbacks.Callback):
                  n_evals=7, mlp_dim=0, depth=0, exper_type='dynamics', fix_B_C=False):
         super(LoggingCallback, self).__init__()
         self.model = model
+        self.length = train_inputs.shape[1]
         self.state_dim = get_ssm_weights(self.model)[0].shape[0]
         self.ext_model, _ = create_ssm(self.state_dim, ext_inputs.shape[1], 0, 1, 1, 0,
                                        mlp_dim=mlp_dim, depth=depth)
@@ -46,6 +47,7 @@ class LoggingCallback(keras.callbacks.Callback):
         self.train_losses = []
         self.ext_losses = []
         self.evals = []
+        self.gammas = []
         self.stamps = []
 
     def on_epoch_end(self, epoch, logs=None):
@@ -70,8 +72,31 @@ class LoggingCallback(keras.callbacks.Callback):
             self.ext_losses.append(ext_loss)
 
             evals = np.linalg.eigvals(W[0])
-            evals = (evals[np.argsort(np.abs(evals))[::-1]])[:self.n_evals]
+            evals = np.abs(evals[np.argsort(np.abs(evals))[::-1]])
             self.evals.append(evals)
+
+            deltas = self.train_outputs - train_preds
+            gamma = np.zeros(self.length - 1)
+            if len(W) > 3: # SSM in non-linear neural network
+                f_model = keras.Model(inputs=self.model.input, outputs=self.model.layers[1].output)
+                g_input = keras.Input(shape=f_model.output_shape[1:])
+                g_output = g_input
+                for layer in self.model.layers[2:]:
+                    g_output = layer(g_output)
+                g_model = keras.Model(inputs=g_input, outputs=g_output)
+                z = f_model(self.train_inputs)
+                with GradientTape() as tape:
+                    tape.watch(z)
+                    g_z = g_model(z)
+                ksis = tape.gradient(g_z, z).numpy()
+                for l in range(self.length - 1):
+                    gamma[l] = (2 * (l + 1) / self.train_inputs.shape[0]) * np.sum(
+                        deltas * ksis * self.train_inputs[:, self.length - l - 2])
+            else: # standalone SSM
+                for l in range(self.length - 1):
+                    gamma[l] = (2 * (l + 1) / self.train_inputs.shape[0]) * np.sum(
+                        deltas * self.train_inputs[:, self.length - l - 2])
+            self.gammas.append(gamma)
 
         if epoch % self.print_period == 0:
             print("-------------------------------------------------------")
@@ -79,7 +104,7 @@ class LoggingCallback(keras.callbacks.Callback):
             print(f'Epoch: {epoch}')
             print(f'Train loss: {self.train_losses[-1]}')
             if self.exper_type == 'dynamics':
-                print(f'{self.n_evals} absolute largest EVs of A: {self.evals[-1]}')
+                print(f'{self.n_evals} absolute largest EVs of A: {self.evals[-1][:self.n_evals]}')
 
 class GradientNormCallback(keras.callbacks.Callback):
     '''
