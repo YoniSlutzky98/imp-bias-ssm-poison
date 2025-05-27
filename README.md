@@ -42,6 +42,10 @@ The experiments train SSM models to fit two datasets (either with or without spe
 | SSM in non-linear neural network (Tables 1 and 3) | ```ssm_in_nn_poison_experiments.ipynb```             |
 
 
+### Running Real-World Experiments (Section 4.2)
+
+See the ```README.md``` file in the ```real-world experiments``` directory.
+
 ## Citation
 
 For citing the paper you can use:
