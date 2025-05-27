@@ -21,7 +21,7 @@ The table below gives the additional arguments required to reproduce each of the
 | 20 test instances, 2500 poison examples | ```--poisonkey 12 --modelkey 22 --budget 0.05 --targets 20``` |
 | 20 test instances, 5000 poison examples | ```--poisonkey 10 --modelkey 20 --budget 0.1 --targets 20```  |
 
-After an experiment terminates, a ```.csv``` table reporting the results is created in ```./tables```. The table below details the relevant columns and their descriptions:
+After an experiment terminates, a ```.csv``` table reporting the results is created in ```./tables```. The table below details the relevant columns and their descriptions.
 
 | Column                  | Description                                                            |
 |-------------------------|------------------------------------------------------------------------|
