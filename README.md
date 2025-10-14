@@ -51,7 +51,7 @@ See the ```README.md``` file in the ```real-world experiments``` directory.
 For citing the paper you can use:
 
 ```
-@inproceedings{slutzky2024implicit,
+@inproceedings{slutzky2025implicit,
   title={The Implicit Bias of Structured State Space Models Can Be Poisoned With Clean Labels},
   author={Slutzky, Yonatan and Alexander, Yotam and Razin, Noam and Cohen, Nadav},
   booktitle={Advances in Neural Information Processing Systems},
