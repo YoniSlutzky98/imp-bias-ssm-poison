@@ -73,10 +73,66 @@ class _VictimEnsemble(_VictimBase):
 
             def loss_fn(model, outputs, labels):
                 return criterion(outputs, labels)
-            for epoch in range(stagger_list[idx]):
-                self._step(kettle, poison_delta, loss_fn, epoch, stats, *single_model)
+            
+            # Create extended scheduler if continue training feature is enabled
+            original_epochs = stagger_list[idx]
+            if self.args.continue_training_to_loss and poison_delta is not None:
+                max_additional_epochs = original_epochs * 2  # Safety limit
+                from .training import create_extended_optimizer_and_scheduler
+                extended_optimizer, extended_scheduler = create_extended_optimizer_and_scheduler(
+                    model, defs, original_epochs, max_additional_epochs)
+                single_model = (model, defs, criterion, extended_optimizer, extended_scheduler)
+            
+            # Train for the original number of epochs
+            epoch_count = 0
+            for epoch in range(original_epochs):
+                self._step(kettle, poison_delta, loss_fn, epoch, stats, *single_model, max_epoch=original_epochs)
+                epoch_count = epoch + 1
                 if self.args.dryrun:
                     break
+            
+            # Extended training for poisoned models to reach original loss (if feature is enabled)
+            if (poison_delta is not None and self.args.continue_training_to_loss and 
+                hasattr(self, 'original_train_loss') and self.original_train_loss is not None and 
+                len(stats['train_losses']) > 0):
+                
+                current_loss = stats['train_losses'][-1]
+                print(f'Model {idx}: After {original_epochs} epochs: current loss = {current_loss:.6f}, target loss = {self.original_train_loss:.6f}')
+                
+                # Continue training until we reach the original training loss (with some tolerance)
+                tolerance = 0.001  # Allow small tolerance for convergence
+                max_additional_epochs = original_epochs * 2  # Safety limit
+                additional_epoch = 0
+                
+                while (current_loss > self.original_train_loss + tolerance and 
+                       additional_epoch < max_additional_epochs):
+                    
+                    epoch = original_epochs + additional_epoch
+                    # Continue with extended scheduler
+                    self._step(kettle, poison_delta, loss_fn, epoch, stats, *single_model, max_epoch=original_epochs)
+                    
+                    if len(stats['train_losses']) > 0:
+                        current_loss = stats['train_losses'][-1]
+                    
+                    additional_epoch += 1
+                    epoch_count += 1
+                    
+                    if additional_epoch % 10 == 0:  # Print progress every 10 epochs
+                        # Get LR from the correct optimizer (extended_optimizer if using extended training)
+                        current_optimizer = single_model[3]  # optimizer is at index 3
+                        current_lr = current_optimizer.param_groups[0]['lr']
+                        print(f'Model {idx} extended training epoch {epoch}: current loss = {current_loss:.6f}, target = {self.original_train_loss:.6f}, LR = {current_lr:.8f}')
+                    
+                    if self.args.dryrun:
+                        break
+                
+                if additional_epoch > 0:
+                    total_epochs = original_epochs + additional_epoch
+                    current_optimizer = single_model[3]  # optimizer is at index 3
+                    final_lr = current_optimizer.param_groups[0]['lr']
+                    print(f'Model {idx}: Extended training completed after {additional_epoch} additional epochs (total: {total_epochs})')
+                    print(f'Model {idx}: Final loss: {current_loss:.6f}, target: {self.original_train_loss:.6f}, final LR: {final_lr:.8f}')
+            
             # Return to CPU
             if torch.cuda.device_count() > 1:
                 model = model.module

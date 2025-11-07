@@ -16,6 +16,33 @@ from .consts import NON_BLOCKING
 
 def system_startup(args=None, defs=None):
     """Decide and print GPU / CPU / hostname info."""
+    
+    # Handle GPU selection if specified
+    if args is not None and hasattr(args, 'gpus') and args.gpus is not None:
+        if args.gpus.lower() == 'cpu':
+            # Force CPU mode
+            import os
+            os.environ['CUDA_VISIBLE_DEVICES'] = ''
+            print('Forced CPU mode via --gpus cpu')
+        elif args.gpus.lower() == 'auto':
+            # Use all available GPUs (default behavior)
+            print(f'Auto GPU mode: Using all {torch.cuda.device_count()} available GPUs')
+        else:
+            # Parse specific GPU IDs
+            import os
+            gpu_ids = args.gpus.replace(' ', '')  # Remove spaces
+            os.environ['CUDA_VISIBLE_DEVICES'] = gpu_ids
+            print(f'Using specified GPUs: {gpu_ids}')
+    
+    # Handle max_gpus limit
+    if args is not None and hasattr(args, 'max_gpus') and args.max_gpus is not None:
+        import os
+        available_gpus = list(range(torch.cuda.device_count()))
+        limited_gpus = available_gpus[:args.max_gpus]
+        gpu_str = ','.join(map(str, limited_gpus))
+        os.environ['CUDA_VISIBLE_DEVICES'] = gpu_str
+        print(f'Limited to {args.max_gpus} GPUs: {gpu_str}')
+    
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
     setup = dict(device=device, dtype=torch.float, non_blocking=NON_BLOCKING)
     print('Currently evaluating -------------------------------:')
@@ -28,6 +55,10 @@ def system_startup(args=None, defs=None):
 
     if torch.cuda.is_available():
         print(f'GPU : {torch.cuda.get_device_name(device=device)}')
+        if torch.cuda.device_count() > 1:
+            print(f'Will use DataParallel across {torch.cuda.device_count()} GPUs')
+    else:
+        print('No GPUs available - running on CPU')
 
     return setup
 
@@ -78,17 +109,17 @@ def save_to_table(out_dir, name, dryrun, **kwargs):
     # Read or write header
     try:
         with open(fname, 'r') as f:
-            reader = csv.reader(f, delimiter='\t')
+            reader = csv.reader(f, delimiter=',')  # Changed from '\t' to ','
             header = [line for line in reader][0]
     except Exception as e:
         print('Creating a new .csv table...')
         with open(fname, 'w') as f:
-            writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
+            writer = csv.DictWriter(f, delimiter=',', fieldnames=fieldnames)  # Changed from '\t' to ','
             writer.writeheader()
     if not dryrun:
         # Add row for this experiment
         with open(fname, 'a') as f:
-            writer = csv.DictWriter(f, delimiter='\t', fieldnames=fieldnames)
+            writer = csv.DictWriter(f, delimiter=',', fieldnames=fieldnames)  # Changed from '\t' to ','
             writer.writerow(kwargs)
         print('\nResults saved to ' + fname + '.')
     else:
@@ -116,14 +147,33 @@ def record_results(kettle, brewed_loss, results, args, defs, modelkey, extra_sta
 
                   budget=args.budget, eps=args.eps,
                   target=class_names[kettle.poison_setup['target_class']] if kettle.poison_setup['target_class'] is not None else 'Several',
-                  goal=class_names[kettle.poison_setup['intended_class'][0]] if len(kettle.poison_setup['target_class']) > 0 else 'Several', #
+                  goal=class_names[kettle.poison_setup['intended_class'][0]] if kettle.poison_setup['target_class'] is not None else 'Several', #
                   #goal=', '.join([class_names[i] for i in kettle.poison_setup['intended_class']]),
                   poison=class_names[kettle.poison_setup['poison_class']] if kettle.poison_setup['poison_class'] is not None else 'All',
 
-                  target_loss_reinit=_maybe(stats_results, 'target_losses'),
-                  target_acc_reinit=_maybe(stats_results, 'target_accs'),
-                  target_loss_rerun=_maybe(stats_rerun, 'target_losses'),
-                  target_acc_rerun=_maybe(stats_rerun, 'target_accs'),
+                #   target_loss_reinit=_maybe(stats_results, 'target_losses'),
+                #   target_acc_reinit=_maybe(stats_results, 'target_accs'), after poison, succesfully poisoned hard case
+                #   target_loss_rerun=_maybe(stats_rerun, 'target_losses'),
+                #   target_acc_rerun=_maybe(stats_rerun, 'target_accs'),
+
+                #   target_loss_clean=_maybe(stats_results, 'target_losses_clean'),
+                #   target_acc_clean=_maybe(stats_results, 'target_accs_clean'), after poison, succesfully classified to original labels 
+                #   target_clean_loss_rerun=_maybe(stats_rerun, 'target_losses_clean'),
+                #   target_clean_acc_rerun=_maybe(stats_rerun, 'target_accs_clean'),
+
+                target_loss_reinit_intended=_maybe(stats_results, 'target_losses'),
+                target_acc_reinit_intended=_maybe(stats_results, 'target_accs'), # after poison, succesfully classified to intended labels
+                target_loss_clean_intended=_maybe(stats_clean, 'target_losses'), 
+                target_acc_clean_intended=_maybe(stats_clean, 'target_accs'), # before poison, succesfully classified to intended labels
+                target_loss_rerun_intended=_maybe(stats_rerun, 'target_losses'),
+                target_acc_rerun_intended=_maybe(stats_rerun, 'target_accs'),
+
+                target_loss_reinit_original=_maybe(stats_results, 'target_losses_clean'),
+                target_acc_reinit_original=_maybe(stats_results, 'target_accs_clean'), #after poison, succesfully classified to original labels
+                target_loss_clean_original=_maybe(stats_clean, 'target_losses_clean'),
+                target_acc_clean_original=_maybe(stats_clean, 'target_accs_clean'), #before poison, succesfully classified to original labels
+                target_loss_rerun_original=_maybe(stats_rerun, 'target_losses_clean'),
+                target_acc_rerun_original=_maybe(stats_rerun, 'target_accs_clean'),
 
                   brewed_loss=brewed_loss,
 
@@ -141,15 +191,7 @@ def record_results(kettle, brewed_loss, results, args, defs, modelkey, extra_sta
                   ablation=args.ablation,
                   benchmark_idx=args.benchmark_idx,
 
-                  target_mloss_reinit=_maybe(stats_results, 'target_losses', mean=True),
-                  target_macc_reinit=_maybe(stats_results, 'target_accs', mean=True),
-                  target_mloss_rerun=_maybe(stats_rerun, 'target_losses', mean=True),
-                  target_macc_rerun=_maybe(stats_rerun, 'target_accs', mean=True),
-
-                  target_loss_clean=_maybe(stats_results, 'target_losses_clean'),
-                  target_acc_clean=_maybe(stats_results, 'target_accs_clean'),
-                  target_clean_loss_rerun=_maybe(stats_rerun, 'target_losses_clean'),
-                  target_clean_acc_rerun=_maybe(stats_rerun, 'target_accs_clean'),
+                  
 
                   **extra_stats,
                   train_loss_reinit=_maybe(stats_results, 'train_losses'),
@@ -202,3 +244,4 @@ def set_deterministic():
     """Switch pytorch into a deterministic computation mode."""
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+

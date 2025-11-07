@@ -82,14 +82,22 @@ class _VictimBase:
     def train(self, kettle, max_epoch=None):
         """Clean (pre)-training of the chosen model, no poisoning involved."""
         print('Starting clean training ...')
-        return self._iterate(kettle, poison_delta=None, max_epoch=max_epoch)
+        stats = self._iterate(kettle, poison_delta=None, max_epoch=max_epoch)
+        # Store the final training loss for comparison during retraining (if feature is enabled)
+        if self.args.continue_training_to_loss and 'train_losses' in stats and len(stats['train_losses']) > 0:
+            self.original_train_loss = stats['train_losses'][-1]
+            print(f'Original model final training loss: {self.original_train_loss:.6f}')
+        else:
+            self.original_train_loss = None
+        return stats
 
     def retrain(self, kettle, poison_delta):
         """Check poison on the initialization it was brewed on."""
         self.initialize(seed=self.model_init_seed)
         print('Model re-initialized to initial seed.')
-        return self._iterate(kettle, poison_delta=poison_delta)
+        return self._iterate(kettle, poison_delta=poison_delta, max_epoch=self.defs.epochs)
 
+        
     def validate(self, kettle, poison_delta):
         """Check poison on a new initialization(s)."""
         run_stats = list()
@@ -123,6 +131,6 @@ class _VictimBase:
         return model, defs, criterion, optimizer, scheduler
 
 
-    def _step(self, kettle, poison_delta, loss_fn, epoch, stats, model, defs, criterion, optimizer, scheduler):
+    def _step(self, kettle, poison_delta, loss_fn, epoch, stats, model, defs, criterion, optimizer, scheduler, max_epoch=None):
         """Single epoch. Can't say I'm a fan of this interface, but ..."""
-        run_step(kettle, poison_delta, loss_fn, epoch, stats, model, defs, criterion, optimizer, scheduler)
+        run_step(kettle, poison_delta, loss_fn, epoch, stats, model, defs, criterion, optimizer, scheduler, max_epoch=max_epoch)

@@ -6,7 +6,13 @@ BRITTLE_NETS = ['convnet', 'mobilenet', 'vgg', 'alexnet']  # handled with lower 
 
 def training_strategy(model_name, args):
     """Parse training strategy."""
-    if args.optimization == 'conservative':
+    if args.optimization == 's4':
+        defs = S4Strategy(model_name, args)
+    elif args.optimization == 'mamba2':
+        defs = Mamba2Strategy(model_name, args)
+    elif args.optimization == 'lru':
+        defs = LRUStrategy(model_name, args)
+    elif args.optimization == 'conservative':
         defs = ConservativeStrategy(model_name, args)
     elif args.optimization == 'private':
         defs = PrivacyStrategy(model_name, args)
@@ -46,16 +52,75 @@ class Strategy:
         if any(net in model_name.lower() for net in BRITTLE_NETS):
             self.lr *= 0.1
 
+
+@dataclass
+class S4Strategy(Strategy):
+    """Training hyperparams for S4, defines a config object."""
+
+    def __init__(self, model_name, args):
+        """Initialize training hyperparameters."""
+        self.lr = 0.01
+        self.epochs = 100
+        self.batch_size = 64
+        self.optimizer = 'AdamW'
+        self.scheduler = 'cosine'
+        self.weight_decay = 1e-2
+        self.augmentations = True
+        self.privacy = dict(clip=None, noise=None)
+        self.adversarial_steps = 0
+        self.validate = 10
+
+        super().__init__(model_name, args)
+
+
+@dataclass
+class Mamba2Strategy(Strategy):
+    """Training hyperparams for Mamba2, defines a config object."""
+
+    def __init__(self, model_name, args):
+        """Initialize training hyperparameters."""
+        self.lr = 0.003
+        self.epochs = 100
+        self.batch_size = 64
+        self.optimizer = 'AdamW'
+        self.scheduler = 'cosine'
+        self.weight_decay = 5e-2
+        self.augmentations = True
+        self.privacy = dict(clip=None, noise=None)
+        self.adversarial_steps = 0
+        self.validate = 10
+        super().__init__(model_name, args)
+
+
+@dataclass
+class LRUStrategy(Strategy):
+    """Training hyperparams for LRU, defines a config object."""
+
+    def __init__(self, model_name, args):
+        """Initialize training hyperparameters."""
+        self.lr = 0.001
+        self.epochs = 100
+        self.batch_size = 64
+        self.optimizer = 'AdamW'
+        self.scheduler = 'cosine'
+        self.weight_decay = 5e-2
+        self.augmentations = True
+        self.privacy = dict(clip=None, noise=None)
+        self.adversarial_steps = 0
+        self.validate = 10
+        super().__init__(model_name, args)
+
+
 @dataclass
 class ConservativeStrategy(Strategy):
     """Default usual parameters, defines a config object."""
 
     def __init__(self, model_name, args):
         """Initialize training hyperparameters."""
-        self.lr = 0.01 # 0.1
+        self.lr = 0.1
         self.epochs = 40
         self.batch_size = 128
-        self.optimizer = 'AdamW' # 'SGD'
+        self.optimizer = 'SGD'
         self.scheduler = 'linear'
         self.weight_decay = 5e-4
         self.augmentations = True

@@ -19,7 +19,25 @@ def get_optimizers(model, args, defs):
         optimizer = torch.optim.SGD(model.parameters(), lr=defs.lr, momentum=0.0,
                                     weight_decay=defs.weight_decay, nesterov=False)
     elif defs.optimizer == 'AdamW':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=defs.lr, weight_decay=defs.weight_decay)
+        #optimizer = torch.optim.AdamW(model.parameters(), lr=defs.lr, weight_decay=defs.weight_decay)
+        all_parameters = list(model.parameters())
+
+        # General parameters don't contain the special _optim key
+        params = [p for p in all_parameters if not hasattr(p, "_optim")]
+
+        # Create an optimizer with the general parameters
+        optimizer = torch.optim.AdamW(params, lr=defs.lr, weight_decay=defs.weight_decay)
+
+        # Add parameters with special hyperparameters
+        hps = [getattr(p, "_optim") for p in all_parameters if hasattr(p, "_optim")]
+        hps = [
+            dict(s) for s in sorted(list(dict.fromkeys(frozenset(hp.items()) for hp in hps)))
+        ]  # Unique dicts
+        for hp in hps:
+            params = [p for p in all_parameters if getattr(p, "_optim", None) == hp]
+            optimizer.add_param_group(
+                {"params": params, **hp}
+            )
 
     if defs.scheduler == 'cyclic':
         effective_batches = (50_000 // defs.batch_size) * defs.epochs
@@ -35,11 +53,47 @@ def get_optimizers(model, args, defs):
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
                                                          milestones=[10_000, 15_000, 25_000], gamma=1)
 
+    elif defs.scheduler == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, defs.epochs, eta_min=defs.lr / 100)
+
         # Example: epochs=160 leads to drops at 60, 100, 140.
     return optimizer, scheduler
 
 
-def run_step(kettle, poison_delta, loss_fn, epoch, stats, model, defs, criterion, optimizer, scheduler, ablation=True):
+def create_extended_scheduler(optimizer, defs, original_epochs, max_additional_epochs):
+    """Create a scheduler for extended training with longer duration and lower minimum LR."""
+    total_epochs = original_epochs + max_additional_epochs
+    
+    if defs.scheduler == 'linear':
+        # Add an additional milestone at the end for further decay
+        original_milestones = [original_epochs // 2.667, original_epochs // 1.6, original_epochs // 1.142]
+        # Add a final milestone at 90% of total extended epochs
+        extended_milestones = [int(0.2 * total_epochs), int(0.4 * total_epochs), int(0.65 * total_epochs), int(0.85 * total_epochs)]
+        extended_milestones = [int(m) for m in original_milestones] + extended_milestones
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=extended_milestones, gamma=0.1)
+        print(f'Extended linear scheduler: milestones at {extended_milestones} for {total_epochs} total epochs')
+        
+    elif defs.scheduler == 'cosine':
+        # Use 10x lower minimum LR for extended training
+        extended_eta_min = defs.lr / 1000  # 10x lower than original eta_min (lr/100)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, total_epochs, eta_min=extended_eta_min)
+        print(f'Extended cosine scheduler: {total_epochs} epochs with eta_min={extended_eta_min:.8f} (10x lower)')
+        
+    else:
+        # For other schedulers, use the original logic
+        if defs.scheduler == 'cyclic':
+            effective_batches = (50_000 // defs.batch_size) * total_epochs
+            scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=defs.lr / 100, max_lr=defs.lr,
+                                                          step_size_up=effective_batches // 2,
+                                                          cycle_momentum=True if defs.optimizer in ['SGD'] else False)
+        elif defs.scheduler == 'none':
+            scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
+                                                             milestones=[10_000, 15_000, 25_000], gamma=1)
+    
+    return scheduler
+
+
+def run_step(kettle, poison_delta, loss_fn, epoch, stats, model, defs, criterion, optimizer, scheduler, ablation=True, max_epoch=None):
 
     epoch_loss, total_preds, correct_preds = 0, 0, 0
     if DEBUG_TRAINING:
@@ -145,10 +199,14 @@ def run_step(kettle, poison_delta, loss_fn, epoch, stats, model, defs, criterion
             scheduler.step()
         if kettle.args.dryrun:
             break
-    if defs.scheduler == 'linear':
+    
+    # Step scheduler normally - extended schedulers will handle the extended training period
+    if defs.scheduler == 'linear' or defs.scheduler == 'cosine':
         scheduler.step()
 
-    if epoch % defs.validate == 0 or epoch == (defs.epochs - 1):
+    # Fix: Use the actual max_epoch being trained, not defs.epochs which might be different during retraining
+    # We need to pass max_epoch to this function, but for now, let's just validate periodically
+    if epoch % defs.validate == 0:
         valid_acc, valid_loss = run_validation(model, criterion, kettle.validloader, kettle.setup, kettle.args.dryrun)
         target_acc, target_loss, target_clean_acc, target_clean_loss = check_targets(
             model, criterion, kettle.targetset, kettle.poison_setup['intended_class'],
@@ -194,26 +252,58 @@ def run_validation(model, criterion, dataloader, setup, dryrun=False):
     loss_avg = loss / (i + 1)
     return accuracy, loss_avg
 
-def check_targets(model, criterion, targetset, intended_class, original_class, setup):
-    """Get accuracy and loss for all targets on their intended class."""
+def check_targets(model, criterion, targetset, intended_class, original_class, setup, batch_size=10):
+    """Get accuracy and loss for all targets on their intended class, processed in batches."""
     model.eval()
     if len(targetset) > 0:
 
         target_images = torch.stack([data[0] for data in targetset]).to(**setup)
         intended_labels = torch.tensor(intended_class).to(device=setup['device'], dtype=torch.long)
         original_labels = torch.stack([torch.as_tensor(data[1], device=setup['device'], dtype=torch.long) for data in targetset])
+        
+        # Initialize accumulators
+        total_correct_intended = 0
+        total_correct_clean = 0
+        total_loss_intended = 0.0
+        total_loss_clean = 0.0
+        total_samples = len(targetset)
+        
         with torch.no_grad():
-            outputs = model(target_images)
-            predictions = torch.argmax(outputs, dim=1)
-
-            loss_intended = criterion(outputs, intended_labels)
-            accuracy_intended = (predictions == intended_labels).sum().float() / predictions.size(0)
-            loss_clean = criterion(outputs, original_labels)
-            predictions_clean = torch.argmax(outputs, dim=1)
-            accuracy_clean = (predictions == original_labels).sum().float() / predictions.size(0)
-
-            # print(f'Raw softmax output is {torch.softmax(outputs, dim=1)}, intended: {intended_class}')
-
-        return accuracy_intended.item(), loss_intended.item(), accuracy_clean.item(), loss_clean.item()
+            # Process targets in batches
+            for start_idx in range(0, total_samples, batch_size):
+                end_idx = min(start_idx + batch_size, total_samples)
+                batch_size_actual = end_idx - start_idx
+                
+                # Slice the tensors for this batch
+                batch_images = target_images[start_idx:end_idx]
+                batch_intended_labels = intended_labels[start_idx:end_idx]
+                batch_original_labels = original_labels[start_idx:end_idx]
+                
+                # Forward pass
+                outputs = model(batch_images)
+                predictions = torch.argmax(outputs, dim=1)
+                
+                # Compute metrics for this batch
+                loss_intended_batch = criterion(outputs, batch_intended_labels)
+                correct_intended_batch = (predictions == batch_intended_labels).sum().item()
+                
+                loss_clean_batch = criterion(outputs, batch_original_labels)
+                correct_clean_batch = (predictions == batch_original_labels).sum().item()
+                
+                # Accumulate results
+                total_correct_intended += correct_intended_batch
+                total_correct_clean += correct_clean_batch
+                total_loss_intended += loss_intended_batch.item() * batch_size_actual
+                total_loss_clean += loss_clean_batch.item() * batch_size_actual
+        
+        # Compute final averages
+        accuracy_intended = total_correct_intended / total_samples
+        accuracy_clean = total_correct_clean / total_samples
+        loss_intended = total_loss_intended / total_samples
+        loss_clean = total_loss_clean / total_samples
+        
+        # print(f'Raw softmax output is {torch.softmax(outputs, dim=1)}, intended: {intended_class}')
+        
+        return accuracy_intended, loss_intended, accuracy_clean, loss_clean
     else:
         return 0, 0, 0, 0

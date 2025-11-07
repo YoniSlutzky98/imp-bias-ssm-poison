@@ -45,11 +45,14 @@ class WitchGradientMatching(_Witch):
 
         SIM_TYPE = ['similarity', 'similarity-narrow', 'top5-similarity', 'top10-similarity', 'top20-similarity']
         if self.args.loss == 'top10-similarity':
-            _, indices = torch.topk(torch.stack([p.norm() for p in target_grad], dim=0), 10)
+            k = min(10, len(target_grad))  # Safety check for small target groups
+            _, indices = torch.topk(torch.stack([p.norm() for p in target_grad], dim=0), k)
         elif self.args.loss == 'top20-similarity':
-            _, indices = torch.topk(torch.stack([p.norm() for p in target_grad], dim=0), 20)
+            k = min(20, len(target_grad))  # Safety check for small target groups
+            _, indices = torch.topk(torch.stack([p.norm() for p in target_grad], dim=0), k)
         elif self.args.loss == 'top5-similarity':
-            _, indices = torch.topk(torch.stack([p.norm() for p in target_grad], dim=0), 5)
+            k = min(5, len(target_grad))  # Safety check for small target groups
+            _, indices = torch.topk(torch.stack([p.norm() for p in target_grad], dim=0), k)
         else:
             indices = torch.arange(len(target_grad))
 

@@ -168,7 +168,6 @@ class Kettle():
                 self.augment = RandomTransform(**params, mode='bilinear')
             else:
                 raise ValueError(f'Invalid diff. transformation given: {self.augmentations}.')
-
         return trainset, validset
 
     def deterministic_construction(self):
@@ -386,6 +385,7 @@ class Kettle():
             for index in range(len(self.trainset)):  # we actually iterate this way not to iterate over the images
                 _, idx = self.trainset.get_target(index)
                 total_ids.append(idx)
+            
             poison_num = int(np.ceil(self.args.budget * len(self.trainset)))
 
             if len(total_ids) < poison_num:
@@ -414,12 +414,13 @@ class Kettle():
         valid_indices = []
         for index in range(len(self.validset)):
             _, idx = self.validset.get_target(index)
-            if idx not in self.target_ids:
-                valid_indices.append(idx)
+            # if idx not in self.target_ids:
+            #     valid_indices.append(idx)
+            valid_indices.append(idx)
         validset = Subset(self.validset, indices=valid_indices)
         poisonset = Subset(self.trainset, indices=self.poison_ids)
 
-        clean_train_size = 45000 #
+        clean_train_size = int(self.args.train_budget * len(self.trainset)) #40000 # # 45000
         clean_ids = []  #
         for index in range(len(self.trainset)):  #
             _, idx = self.trainset.get_target(index)  #
@@ -427,15 +428,89 @@ class Kettle():
                 clean_ids.append(idx)  #
         clean_ids = torch.tensor(np.random.choice(clean_ids, size=clean_train_size, replace=False))
         if not self.include_poison: #
-            train_ids = clean_ids #
+            self.train_ids = clean_ids #
         else: #
-            train_ids = torch.cat((clean_ids, self.poison_ids), dim=0) #
-        self.trainset = Subset(self.trainset, indices=train_ids)  #
+            self.train_ids = torch.cat((clean_ids, self.poison_ids), dim=0) #
+        self.trainset = Subset(self.trainset, indices=self.train_ids)  #
 
         # Construct lookup table
         self.poison_lookup = dict(zip(self.poison_ids.tolist(), range(poison_num)))
-        self.train_lookup = dict(zip(train_ids.tolist(), range(clean_train_size + poison_num))) #
+        self.train_lookup = dict(zip(self.train_ids.tolist(), range(clean_train_size + poison_num))) #
         return poisonset, targetset, validset
+
+    def create_duplicated_poison_dataset(self):
+        """Create a dataset where poison samples appear twice: once clean, once for poisoning.
+        
+        This modifies the trainset to include:
+        - All clean samples (not in poison_ids)
+        - All poison samples twice: once as clean, once as poison candidates
+        
+        Updates poison_lookup to only map the "poison copy" IDs to poison deltas.
+        """
+        if not hasattr(self, 'original_train_ids'):
+            # Store original state for potential restoration
+            self.original_train_ids = self.train_ids.clone()
+            self.original_poison_lookup = self.poison_lookup.copy()
+            self.original_trainset = self.trainset
+        
+        # Get clean IDs (not in poison set)
+        clean_train_size = int(self.args.train_budget * len(self.trainset.dataset if hasattr(self.trainset, 'dataset') else self.trainset))
+        clean_ids = []
+        
+        # Get the base dataset to work with
+        base_dataset = self.trainset.dataset if hasattr(self.trainset, 'dataset') else self.trainset
+        
+        for index in range(len(base_dataset)):
+            _, idx = base_dataset.get_target(index)
+            if idx not in self.poison_ids:
+                clean_ids.append(idx)
+        
+        # Sample clean IDs according to train_budget
+        clean_ids = torch.tensor(np.random.choice(clean_ids, size=clean_train_size, replace=False))
+        
+        # Create new IDs for duplicated poison samples
+        # We'll use a large offset to ensure no collision with existing IDs
+        max_id = max(len(base_dataset), max(self.poison_ids).item() + 1)
+        poison_clean_ids = self.poison_ids.clone()  # These will be treated as clean
+        poison_dirty_ids = self.poison_ids + max_id  # These will have poison applied
+        
+        # Combine all IDs: clean + poison_clean + poison_dirty
+        self.train_ids = torch.cat((clean_ids, poison_clean_ids, poison_dirty_ids), dim=0)
+        
+        # Create new poison_lookup that only maps the "dirty" poison IDs
+        poison_num = len(self.poison_ids)
+        self.poison_lookup = dict(zip(poison_dirty_ids.tolist(), range(poison_num)))
+        
+        # Update train_lookup
+        total_size = len(clean_ids) + len(poison_clean_ids) + len(poison_dirty_ids)
+        self.train_lookup = dict(zip(self.train_ids.tolist(), range(total_size)))
+        
+        # Create a custom dataset that handles the duplicated poison samples
+        from .duplicated_dataset import DuplicatedPoisonDataset
+        self.trainset = DuplicatedPoisonDataset(
+            base_dataset, 
+            self.train_ids, 
+            self.poison_ids, 
+            poison_dirty_ids, 
+            max_id
+        )
+        
+        # Update the trainloader
+        num_workers = self.get_num_workers()
+        self.trainloader = torch.utils.data.DataLoader(
+            self.trainset, 
+            batch_size=min(self.batch_size, len(self.trainset)),
+            shuffle=True, 
+            drop_last=False, 
+            num_workers=num_workers, 
+            pin_memory=PIN_MEMORY
+        )
+        
+        print(f'Created duplicated poison dataset:')
+        print(f'  Clean samples: {len(clean_ids)}')
+        print(f'  Poison samples (clean copy): {len(poison_clean_ids)}')
+        print(f'  Poison samples (poison copy): {len(poison_dirty_ids)}')
+        print(f'  Total training samples: {len(self.trainset)}')
 
     def initialize_poison(self, initializer=None):
         """Initialize according to args.init.
@@ -474,7 +549,7 @@ class Kettle():
 
     """ EXPORT METHODS """
 
-    def export_poison(self, poison_delta, path=None, mode='automl'):
+    def export_poison(self, poison_delta, path=None, mode='automl', model_seed=None):
         """Export poisons in either packed mode (just ids and raw data) or in full export mode, exporting all images.
 
         In full export mode, export data into folder structure that can be read by a torchvision.datasets.ImageFolder
@@ -581,18 +656,43 @@ class Kettle():
                 training_data = np.zeros([len(self.trainset), h, w, c]) #
             labels = np.zeros(len(self.trainset))
             deltas = [] #
+            poison_ids = []
             for input, label, idx in self.trainset:
                 lookup = self.poison_lookup.get(idx.item()) #
                 if lookup is not None:
                     input += poison_delta[lookup, :, :, :]
-                    deltas.append(poison_delta[lookup, :, :, :]) #
+                    deltas.append(poison_delta[lookup, :, :, :].cpu().numpy()) #
+                    poison_ids.append(idx.item())
                 training_data[self.train_lookup[idx.item()]] = np.asarray(_torch_to_PIL(input)) #
                 labels[self.train_lookup[idx.item()]] = label #
             deltas = np.asarray(deltas) #
-            np.save(os.path.join(path, 'deltas.npy'), deltas) #
-            np.save(os.path.join(path, 'poisoned_training_data.npy'), training_data)
-            np.save(os.path.join(path, 'poisoned_training_labels.npy'), labels)
-
+            
+            # Compute last row norm ratio (percentage of norm in last row vs entire image)
+            N = deltas.shape[0]
+            if N > 0 and len(deltas.shape) == 4:  # Ensure we have poison deltas with shape (N, C, H, W)
+                # deltas shape: (N, C, H, W)
+                last_row_norms = np.linalg.norm(deltas[:, :, -1, :].reshape(N, -1), axis=1)
+                image_norms = np.linalg.norm(deltas.reshape(N, -1), axis=1)
+                # Avoid division by zero
+                ratios = np.divide(last_row_norms, image_norms, out=np.zeros_like(last_row_norms), where=image_norms!=0)
+                last_row_norm_ratio = np.mean(ratios)
+            else:
+                last_row_norm_ratio = 0.0
+            
+            # Create filename with seeds included
+            base_name = self.args.name
+            if model_seed is not None:
+                filename_prefix = f'{base_name}_model_seed={model_seed}_poison_seed={self.init_seed}'
+            else:
+                filename_prefix = f'{base_name}_poison_seed={self.init_seed}'
+            
+            np.save(os.path.join(path, f'{filename_prefix}_deltas.npy'), deltas) #
+            np.save(os.path.join(path, f'{filename_prefix}_poisoned_training_data.npy'), training_data)
+            np.save(os.path.join(path, f'{filename_prefix}_poisoned_training_labels.npy'), labels)
+            np.save(os.path.join(path, f'{filename_prefix}_poison_ids.npy'), poison_ids)
+            
+            return last_row_norm_ratio
+            
         elif mode == 'kettle-export':
             with open(f'kette_{self.args.dataset}{self.args.model}.pkl', 'wb') as file:
                 pickle.dump([self, poison_delta], file, protocol=pickle.HIGHEST_PROTOCOL)
@@ -625,3 +725,4 @@ class Kettle():
             raise NotImplementedError()
 
         print('Dataset fully exported.')
+        return None  # Return None for non-numpy modes

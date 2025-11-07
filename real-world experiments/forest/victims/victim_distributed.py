@@ -69,9 +69,18 @@ class _VictimDistributed(_VictimSingle):
         def loss_fn(model, outputs, labels):
             return self.criterion(outputs, labels)
 
-        single_setup = (self.model, self.defs, self.criterion, self.optimizer, self.scheduler)
-        for self.epoch in range(stagger_list[self.rank]):
-            self._step(kettle, poison_delta, loss_fn, self.epoch, stats, *single_setup)
+        # Create extended scheduler if continue training feature is enabled
+        original_epochs = stagger_list[self.rank]
+        if self.args.continue_training_to_loss and poison_delta is not None:
+            max_additional_epochs = original_epochs * 2  # Safety limit
+            from .training import create_extended_scheduler
+            extended_scheduler = create_extended_scheduler(self.optimizer, self.defs, original_epochs, max_additional_epochs)
+            single_setup = (self.model, self.defs, self.criterion, self.optimizer, extended_scheduler)
+        else:
+            single_setup = (self.model, self.defs, self.criterion, self.optimizer, self.scheduler)
+            
+        for self.epoch in range(original_epochs):
+            self._step(kettle, poison_delta, loss_fn, self.epoch, stats, *single_setup, max_epoch=original_epochs)
             if self.args.dryrun:
                 break
         torch.distributed.barrier()

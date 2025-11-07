@@ -9,6 +9,8 @@ from collections import OrderedDict
 from .mobilenet import MobileNetV2
 from .vgg import VGG
 from .s4model import S4Model
+from .mamba2model import Mamba2Model
+from .lrumodel import LRUModel
 
 
 def get_model(model_name, dataset_name, pretrained=False):
@@ -28,7 +30,7 @@ def get_model(model_name, dataset_name, pretrained=False):
         elif model_name == 'ConvNet64':
             model = convnet(width=64, in_channels=in_channels, num_classes=num_classes)
         elif model_name == 'ConvNet128':
-            model = convnet(width=64, in_channels=in_channels, num_classes=num_classes)
+            model = convnet(width=128, in_channels=in_channels, num_classes=num_classes)
         elif model_name == 'ConvNetBN':
             model = ConvNetBN(width=64, in_channels=in_channels, num_classes=num_classes)
         elif model_name == 'Linear':
@@ -42,7 +44,11 @@ def get_model(model_name, dataset_name, pretrained=False):
         elif model_name == 'MobileNetV2':
             model = MobileNetV2(num_classes=num_classes, train_dp=0, test_dp=0, droplayer=0, bdp=0)
         elif model_name == 'S4':
-            model = s4(width=128, in_channels=in_channels, num_classes=num_classes)
+            model = s4(width=128, n_layers=4, dropout=0.1, in_channels=in_channels, num_classes=num_classes)
+        elif model_name == 'Mamba2':
+            model = mamba2(width=128, n_layers=4, dropout=0.1, in_channels=in_channels, num_classes=num_classes)
+        elif model_name == 'LRU':
+            model = lru(width=128, n_layers=4, dropout=0.1, in_channels=in_channels, num_classes=num_classes)
         else:
             raise ValueError(f'Architecture {model_name} not implemented for dataset {dataset_name}.')
 
@@ -117,16 +123,48 @@ def convnet(width=32, in_channels=3, num_classes=10, **kwargs):
     return model
 
 
-def s4(width=128, in_channels=3, num_classes=10, **kwargs):
+def s4(width=128, n_layers=4, dropout=0.1, in_channels=3, num_classes=10, **kwargs):
     """Define an S4 vision model."""
     model = S4Model(
         d_input=in_channels,
         d_output=num_classes,
         d_model=width,
-        n_layers=4,
-        dropout=0.1, # 0.2
-        prenorm='store_true', # False
+        n_layers=n_layers,
+        dropout=dropout,
+        **kwargs
     )
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total parameters: {total_params}")
+    return model
+
+
+def mamba2(width=128, n_layers=4, dropout=0.1, in_channels=3, num_classes=10, **kwargs):
+    """Define a Mamba-2 vision model."""
+    model = Mamba2Model(
+        d_input=in_channels,
+        d_output=num_classes,
+        d_model=width,
+        n_layers=n_layers,
+        dropout=dropout,
+        **kwargs
+    )
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total parameters: {total_params}")
+    return model
+
+
+def lru(width=128, n_layers=4, dropout=0.1, in_channels=3, num_classes=10, **kwargs):
+    """Define an LRU vision model."""
+    model = LRUModel(
+        d_input=in_channels,
+        d_output=num_classes,
+        d_model=width,
+        n_layers=n_layers,
+        dropout=dropout,
+        **kwargs
+    )
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total parameters: {total_params}")
     return model
 
 

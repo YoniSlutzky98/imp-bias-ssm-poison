@@ -7,13 +7,16 @@ import torchvision.transforms as transforms
 
 from .s4d import S4D
 
-if tuple(map(int, torch.__version__.split('.')[:2])) == (1, 11):
-    print("WARNING: Dropout is bugged in PyTorch 1.11. Results may be worse.")
-    dropout_fn = nn.Dropout
-if tuple(map(int, torch.__version__.split('.')[:2])) >= (1, 12):
-    dropout_fn = nn.Dropout1d
-else:
-    dropout_fn = nn.Dropout2d
+
+def get_dropout_fn():
+    if tuple(map(int, torch.__version__.split('.')[:2])) == (1, 11):
+        print("WARNING: Dropout is bugged in PyTorch 1.11. Results may be worse.")
+        dropout_fn = nn.Dropout
+    elif tuple(map(int, torch.__version__.split('.')[:2])) >= (1, 12):
+        dropout_fn = nn.Dropout1d
+    else:
+        dropout_fn = nn.Dropout2d
+    return dropout_fn
 
 class S4Model(nn.Module):
 
@@ -23,13 +26,13 @@ class S4Model(nn.Module):
         d_output=10,
         d_model=128,
         n_layers=4,
-        dropout=0.2,
+        dropout=0.1,
         prenorm=False,
     ):
         super().__init__()
 
         self.prenorm = prenorm
-
+        dropout_fn = get_dropout_fn()
         # Linear encoder (d_input = 1 for grayscale and 3 for RGB)
         self.encoder = nn.Linear(d_input, d_model)
 
@@ -54,8 +57,8 @@ class S4Model(nn.Module):
         """
         B, d_input, h, w = x.shape
         x = x.view(B, h * w, d_input) # (B, C, H, W) -> (B, L, d_input)
-        #B = x.shape[0]
-        #x = x.view(B, 784, 1)
+        #B = x.shape[0] # for MNIST
+        #x = x.view(B, 784, 1) # for MNIST
         x = self.encoder(x)  # (B, L, d_input) -> (B, L, d_model)
 
         x = x.transpose(-1, -2)  # (B, L, d_model) -> (B, d_model, L)
@@ -66,7 +69,6 @@ class S4Model(nn.Module):
             if self.prenorm:
                 # Prenorm
                 z = norm(z.transpose(-1, -2)).transpose(-1, -2)
-
             # Apply S4 block: we ignore the state input and output
             z, _ = layer(z)
 
@@ -84,8 +86,6 @@ class S4Model(nn.Module):
 
         # Pooling: average pooling over the sequence length
         x = x.mean(dim=1)
-
-        # Decode the outputs
         x = self.decoder(x)  # (B, d_model) -> (B, d_output)
 
         return x

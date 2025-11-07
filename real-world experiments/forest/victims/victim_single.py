@@ -49,11 +49,59 @@ class _VictimSingle(_VictimBase):
         def loss_fn(model, outputs, labels):
             return self.criterion(outputs, labels)
 
-        single_setup = (self.model, self.defs, self.criterion, self.optimizer, self.scheduler)
+        # Create extended scheduler if continue training feature is enabled
+        if self.args.continue_training_to_loss and poison_delta is not None:
+            max_additional_epochs = max_epoch * 2  # Safety limit
+            from .training import create_extended_scheduler
+            extended_scheduler = create_extended_scheduler(self.optimizer, self.defs, max_epoch, max_additional_epochs)
+            single_setup = (self.model, self.defs, self.criterion, self.optimizer, extended_scheduler)
+        else:
+            single_setup = (self.model, self.defs, self.criterion, self.optimizer, self.scheduler)
+        
+        # Train for the original number of epochs
         for self.epoch in range(max_epoch):
-            self._step(kettle, poison_delta, loss_fn, self.epoch, stats, *single_setup)
+            self._step(kettle, poison_delta, loss_fn, self.epoch, stats, *single_setup, max_epoch=max_epoch)
             if self.args.dryrun:
                 break
+        
+        # If we have poison, the feature is enabled, and an original training loss target, continue training until we reach it
+        if (poison_delta is not None and self.args.continue_training_to_loss and 
+            hasattr(self, 'original_train_loss') and self.original_train_loss is not None and 
+            len(stats['train_losses']) > 0):
+            
+            current_loss = stats['train_losses'][-1]
+            print(f'After {max_epoch} epochs: current loss = {current_loss:.6f}, target loss = {self.original_train_loss:.6f}')
+            
+            # Continue training until we reach the original training loss (with some tolerance)
+            tolerance = 0.001  # Allow small tolerance for convergence
+            max_additional_epochs = max_epoch * 2  # Safety limit to prevent infinite training
+            additional_epoch = 0
+            
+            while (current_loss > self.original_train_loss + tolerance and 
+                   additional_epoch < max_additional_epochs):
+                
+                self.epoch = max_epoch + additional_epoch
+                # Continue with extended scheduler
+                self._step(kettle, poison_delta, loss_fn, self.epoch, stats, *single_setup, max_epoch=max_epoch)
+                
+                if len(stats['train_losses']) > 0:
+                    current_loss = stats['train_losses'][-1]
+                
+                additional_epoch += 1
+                
+                if additional_epoch % 10 == 0:  # Print progress every 10 epochs
+                    current_lr = self.optimizer.param_groups[0]['lr']
+                    print(f'Extended training epoch {self.epoch}: current loss = {current_loss:.6f}, target = {self.original_train_loss:.6f}, LR = {current_lr:.8f}')
+                
+                if self.args.dryrun:
+                    break
+            
+            if additional_epoch > 0:
+                total_epochs = max_epoch + additional_epoch
+                final_lr = self.optimizer.param_groups[0]['lr']
+                print(f'Extended training completed after {additional_epoch} additional epochs (total: {total_epochs})')
+                print(f'Final loss: {current_loss:.6f}, target: {self.original_train_loss:.6f}, final LR: {final_lr:.8f}')
+        
         return stats
 
     def step(self, kettle, poison_delta, poison_targets, true_classes):

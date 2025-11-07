@@ -64,6 +64,11 @@ if __name__ == "__main__":
     brew_time = time.time()
 
     if not args.pretrained and args.retrain_from_init:
+        # Use duplicated poison dataset if requested
+        if args.duplicate_poison_training:
+            print('Using duplicated poison training: poison samples appear both clean and poisoned...')
+            data.create_duplicated_poison_dataset()
+        
         stats_rerun = model.retrain(data, poison_delta)
     else:
         stats_rerun = None  # we dont know the initial seed for a pretrained model so retraining makes no sense
@@ -73,6 +78,9 @@ if __name__ == "__main__":
         args.net = args.vnet
         if args.vruns > 0:
             model = forest.Victim(args, setup=setup)
+            # Use duplicated poison dataset for validation if requested
+            if args.duplicate_poison_training:
+                data.create_duplicated_poison_dataset()
             stats_results = model.validate(data, poison_delta)
         else:
             stats_results = None
@@ -80,6 +88,9 @@ if __name__ == "__main__":
 
     else:  # Validate the main model
         if args.vruns > 0:
+            # Use duplicated poison dataset for validation if requested
+            if args.duplicate_poison_training:
+                data.create_duplicated_poison_dataset()
             stats_results = model.validate(data, poison_delta)
         else:
             stats_results = None
@@ -96,7 +107,7 @@ if __name__ == "__main__":
 
         # Export
         if args.save:
-            data.export_poison(poison_delta, path=None, mode='full')
+            data.export_poison(poison_delta, path=None, mode='full', model_seed=model.model_init_seed)
 
         print(datetime.datetime.now().strftime("%A, %d. %B %Y %I:%M%p"))
         print('---------------------------------------------------')
