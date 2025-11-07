@@ -1,5 +1,5 @@
-# The Implicit Bias of Structured State Space Models Can Be Poisoned With Clean Labels
-Official implementation for the experiments in [The Implicit Bias of Structured State Space Models Can Be Poisoned With Clean Labels](https://www.arxiv.org/abs/2410.10473), based on the [Tensorflow](https://www.tensorflow.org/), [Keras](https://keras.io/) and [SciPy](https://scipy.org/) libraries.
+# The Implicit Bias of Structured State Space Models Can Be Poisoned With Clean Labels (NeurIPS 2025)
+Official implementation for the experiments in [The Implicit Bias of Structured State Space Models Can Be Poisoned With Clean Labels](https://www.arxiv.org/abs/2410.10473) (NeurIPS 2025), based on the [Tensorflow](https://www.tensorflow.org/), [Keras](https://keras.io/) and [SciPy](https://scipy.org/) libraries.
 
 ## Installing Requirements
 
@@ -51,10 +51,10 @@ See the ```README.md``` file in the ```real-world experiments``` directory.
 For citing the paper you can use:
 
 ```
-@article{slutzky2024implicit,
+@inproceedings{slutzky2025implicit,
   title={The Implicit Bias of Structured State Space Models Can Be Poisoned With Clean Labels},
   author={Slutzky, Yonatan and Alexander, Yotam and Razin, Noam and Cohen, Nadav},
-  journal={arXiv preprint arXiv:2410.10473},
-  year={2024}
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2025}
 }
 ```
